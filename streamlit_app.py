@@ -31,13 +31,13 @@ from AirPollutionData import idaea
 
 CWD = os.getcwd()
 
-YEAR_OF_DATA = [2019, 2022, 2023]
+YEAR_OF_DATA = [2019, 2022, 2023] # conjunto datos anuales que tenemos
 
 DEFAULT_YEAR = 2023
 
-DEFAULT_VERSION = 1
+DEFAULT_VERSION = 1 # version 0: TFM Mariela | 1: TFM Wenyu
 
-DEFAULT_CVP_INDEX = 1
+DEFAULT_CVP_INDEX = 1 # version datos poblacio, 0: Joan (TFM Mariela) | 1: idescat por seccion censal
 
 DEFAULT_CONTAMINANT = 'NO2'
 
@@ -56,6 +56,29 @@ CAPTION3 = {
     3: "high",
 }
 
+COLOR5 = {
+    0: os.path.join(CWD, "rgb_img/250_250_250.png"), # no data
+    1: os.path.join(CWD, "rgb_img/000_200_000.png"), # verde - bueno (menor que 20)
+    2: os.path.join(CWD, "rgb_img/255_255_000.png"), # amarillo - moderado (20-39)
+    3: os.path.join(CWD, "rgb_img/255_150_000.png"), # naranja - malo (40-59)
+    4: os.path.join(CWD, "rgb_img/255_000_000.png")  # rojo - muy malo (mayor que 60)
+}
+
+VCOLOR5 = {
+    0: os.path.join(CWD, "rgb_img/250_250_250.png"), # no data
+    1: os.path.join(CWD, "rgb_img/000_000_255.png"), # azul <= 0.9
+    2: os.path.join(CWD, "rgb_img/000_200_000.png"), # verde - <=1
+    3: os.path.join(CWD, "rgb_img/255_255_000.png"), # amarillo - <= 1.1
+    4: os.path.join(CWD, "rgb_img/255_000_000.png")  # rojo - > 1.1
+}
+
+CAPTION5 = {
+    0: "no data",
+    1: "low",
+    2: "medium",
+    3: "high",
+    4: "very high",
+}
 COLOR7 = {
     0: os.path.join(CWD, "rgb_img/250_250_250.png"),
     1: os.path.join(CWD, "rgb_img/000_255_000.png"),
@@ -94,8 +117,12 @@ def get_df_histograma_hores(contaminante: str, df: pd.DataFrame) -> pd.DataFrame
 
     # ara creem la informacio que volem plotejar...
     value_dict = {
-        "mean": [ v_mean if h in df.columns  else 0.0  for h in od.HORES ],
-        f"{contaminante}": [ df[h].iloc[0]  if h in df.columns  else 0.0  for h in od.HORES ]
+        "hora": [ h + 1 for h in range(24)],
+        f"{contaminante}": [ df[h].iloc[0]  if h in df.columns  else 0.0  for h in od.HORES ],
+        "mean": [v_mean if h in df.columns else 0.0 for h in od.HORES],
+        "good": [ 20.0 if h in df.columns  else 0.0  for h in od.HORES ],
+        "moderate": [40.0 if h in df.columns else 0.0 for h in od.HORES],
+        "bad": [60.0 if h in df.columns else 0.0 for h in od.HORES],
         }
     return pd.DataFrame(value_dict)
 
@@ -212,37 +239,74 @@ def get_color3(scene_key: str, hazard: float, vuci: float, cvpi: float) -> tuple
     return (k, COLOR3.get(k, ''), CAPTION3.get(k, ''))
 
 
-class AirPollutionRisk:
-    def __init__(self, eoi_code: str, df: pd.DataFrame):
+def get_no2_color5(hazard: float, hazard_norm: float, vuci_norm: float, cvpi_norm: float) -> tuple:
+    # risk = hazard x scenario_code
+    # vamos a modificar el hazard segun los valores de vuci i cvpi.
+    if np.isnan(hazard):
+        k1 = 0
+    else:
+        if hazard < 20.0:
+            k1 = 1
+        elif hazard < 40.0:
+            k1 = 2
+        elif hazard < 60.0:
+            k1 = 3
+        else:
+            k1 = 4
+
+    indice_compuesto = (vuci_norm + cvpi_norm + hazard_norm ) / 3.0
+    if np.isnan(indice_compuesto):
+        k2 = 0
+    else:
+        if indice_compuesto <= 0.9:
+            k2 = 1
+        elif indice_compuesto <= 1.0:
+            k2 = 2
+        elif indice_compuesto <= 1.1:
+            k2 = 3
+        else:
+            k2 = 4
+
+    return (k1, COLOR5.get(k1, ''), CAPTION5.get(k1, ''), k2, VCOLOR5.get(k2, ''), CAPTION5.get(k2, ''))
+
+
+class AirPollutionIndex:
+    def __init__(self, eoi_code:str):
         # calculamos los porcentajes de cada LCZ, que se almacenan en un diccionario {lcz:%}
         # devolvemos tambien el codigo de LCZ maximo
-        dicc, lczmax = icgc.get_LCZmax(eoi_code, DEFAULT_VERSION)
-        vuci = icgc.get_VUCI(lczmax)
-        cvp_list = [ idescat.get_CVP(eoi_code, yr, DEFAULT_CVP_INDEX) for yr in YEAR_OF_DATA ]
-        no2_list = [ idaea.get_NO2_mean(eoi_code, yr) for yr in YEAR_OF_DATA ]
+        self.lcz_dict, self.lcz_max = icgc.get_LCZmax(eoi_code, DEFAULT_VERSION)
 
-        self.lcz_dict = {yr: dicc for yr in YEAR_OF_DATA}
-        self.lcz_max = {yr: lczmax for yr in YEAR_OF_DATA}
-        self.vuci = {yr: vuci for yr in YEAR_OF_DATA}
-        self.cvpi = { yr: cvp for yr, cvp in zip(YEAR_OF_DATA, cvp_list) }
-        self.no2_mean = { yr: no2 for yr, no2 in zip(YEAR_OF_DATA, no2_list) }
-        self.hazard_value = { yr: np.nan if df.empty else get_hazard_data(df) for yr in YEAR_OF_DATA }
+        # vamos a calcular el self.vuci como VUCI ponderado
+        self.vuci_ponderado = icgc.get_VUCI_ponderado(eoi_code, DEFAULT_VERSION)
 
-        self.scenario_code = {}
-        self.scenario_name = {}
-        self.risk = {}
-        self.risk_image = {}
-        self.risk_caption = {}
-        for yr in YEAR_OF_DATA:
-            cvp = self.cvpi.get(yr, 0.0)
-            hazard = self.hazard_value.get(yr, np.nan)
-            key, name = icgc.get_scenario(vuci, cvp)
-            risk, img, caption = get_color3(key, hazard, vuci, cvp)
-            self.scenario_code[yr] = key
-            self.scenario_name[yr] = name
-            self.risk[yr] = risk
-            self.risk_image[yr] = img
-            self.risk_caption[yr] = caption
+        self.cvpi = idescat.get_CVP(eoi_code, DEFAULT_YEAR, DEFAULT_CVP_INDEX)
+
+        self.no2_mean = idaea.get_NO2_mean(eoi_code, DEFAULT_YEAR)
+
+
+class AirPollutionRisk:
+    def __init__(self, eoi_code: str, df: pd.DataFrame):
+        rdi = AirPollutionIndex(eoi_code)
+        self.hazard_value = get_hazard_data(df)
+
+        # necesitamos calcular hazard_norm, vuci_norm y cvpi_norm
+
+        no2_mean_list = [ ]
+        vuci_ponderado_list = []
+        cvpi_list = []
+        for estacion in stations.EOI_DF["codi_eoi"]:
+            datos = AirPollutionIndex(estacion)
+            no2_mean_list.append(datos.no2_mean)
+            vuci_ponderado_list.append(datos.vuci_ponderado)
+            cvpi_list.append(datos.cvpi)
+
+        hazard = self.hazard_value / np.nanmean(np.array(no2_mean_list)) # aproximacion ya que mezclamos datos dia con medias anuales
+        vuci = rdi.vuci_ponderado / np.nanmean(np.array(vuci_ponderado_list))
+        cvpi = rdi.cvpi / np.nanmean(np.array(cvpi_list))
+
+        self.risk, self.risk_image, self.risk_caption, self.vi, self.vi_image, self.vi_caption = get_no2_color5(self.hazard_value, hazard, vuci, cvpi)
+
+
 
 
 def streamlit_main():
@@ -266,14 +330,15 @@ def streamlit_main():
         # st.latex(r''' a + ar + a r^2 + a r^3 + \cdots + a r^{n-1} = \sum_{k=0}^{n-1} ar^k = a \left(\frac{1-r^{n}}{1-r}\right) ''')
 
     # ======================================================
-    row1_1, row1_2 = st.columns((2, 3))
+    row1_1, row1_2, row1_3 = st.columns((1, 1, 3))
 
-    row1_1.subheader(f"Select ...")
+    row1_1.subheader(f"Select...")
     # escogemos el nombre de la estacion de la cual queremos consultar los datos
-    eoi_name = row1_1.selectbox("station:", stations.EOI_DF)
+    eoi_name = row1_1.selectbox("station", stations.EOI_DF)
     
     # escogemos la fecha que nos interesa, por defecto el dia de la consulta...
-    ymd = row1_1.date_input("one day:")
+    row1_2.subheader(f" ")
+    ymd = row1_2.date_input("one day")
     
     # Restringimos a los dos contaminantes descritos en el TFM, aunque por defecto trataremos siempre el NO2.
     # contaminante = row1_1.radio("pollutant:", ('NO2', 'PM2.5'))
@@ -287,7 +352,7 @@ def streamlit_main():
     # Primero, vamos a pintar el mapa de situacion de las estaciones:
     mapstyle, initviewstate, selectedlayers = get_station_map_data(df)
     # row1_2.map(data=df, zoom=13, use_container_width=True)
-    row1_2.pydeck_chart(pdk.Deck(map_style=mapstyle, initial_view_state=initviewstate, layers=selectedlayers))
+    row1_3.pydeck_chart(pdk.Deck(map_style=mapstyle, initial_view_state=initviewstate, layers=selectedlayers))
 
     # buscamos el codigo de estacion asociado a eoi_name:
     eoi_code = stations.get_codi_eoi(eoi_name)
@@ -296,20 +361,26 @@ def streamlit_main():
     rd = AirPollutionRisk(eoi_code, df)
 
     row1_1.write(" ")
-    row1_1.subheader(f" {contaminante} Air Quality Index ({DEFAULT_YEAR}):")
+    row1_1.subheader(f" {contaminante} Daily Mean Concentration:")
+    #row1_1.subheader(f" {contaminante} Air Quality Index ({DEFAULT_YEAR}):")
     # aqui pondremos el semaforo con el risk_data.risk
-    semafor = rd.risk_image.get(DEFAULT_YEAR, '')
-    if os.path.isfile(semafor): row1_1.image(semafor, caption=rd.risk_caption.get(DEFAULT_YEAR, ''), width=150)
+    semafor = rd.risk_image
+    if os.path.isfile(semafor): row1_1.image(semafor, caption=rd.risk_caption, width=150)
+
+    row1_2.write(" ")
+    row1_2.subheader(f" Complex Vulnerability Index:")
+    # aqui pondremos el semaforo con el risk_data.risk
+    semafor = rd.vi_image
+    if os.path.isfile(semafor): row1_2.image(semafor, caption=rd.vi_caption, width=150)
 
     # ======================================================
     # Vamos a comprovar si tenemos datos o no y calculamos todos los datos del riesgo asociado al contaminante:
     st.write(f" ")
     st.subheader(get_information_about_data(eoi_name, ymd, contaminante, df))
-    for yr in YEAR_OF_DATA:
-        st.write(f"--- Year: {yr} ---")
-        st.write(f"LCZ max: {rd.lcz_max.get(yr, '-')} | VUCI: {rd.vuci.get(yr, '-')} | CVP: {rd.cvpi.get(yr, '-')}")
-        st.write(f"Hazard({contaminante}): {rd.hazard_value.get(yr, '-')} | NO2 mean: {rd.no2_mean.get(yr, '-')}")
-        st.write(f" Scenario: {rd.scenario_code.get(yr, '-')} | Risk: {rd.risk.get(yr, '-')}")
+    #st.write(f"--- Year: DEFAULT_YEAR ---")
+    #st.write(f"LCZ max: {rd.lcz_max.get(yr, '-')} | VUCI: {rd.vuci.get(yr, '-')} | CVP: {rd.cvpi.get(yr, '-')}")
+    #    st.write(f"Hazard({contaminante}): {rd.hazard_value.get(yr, '-')} | NO2 mean: {rd.no2_mean.get(yr, '-')}")
+    #    st.write(f" Scenario: {rd.scenario_code.get(yr, '-')} | Risk: {rd.risk.get(yr, '-')}")
 
     # ======================================================
     row2_1, row2_2 = st.columns((2, 3))
@@ -321,14 +392,17 @@ def streamlit_main():
     # pintamos ahora el histograma de valores del contaminante...
     if not df.empty:
         row2_2.write(f"{contaminante} data in {eoi_name} ({ymd})")
-        row2_2.line_chart(get_df_histograma_hores(contaminante, df))  # plot modo grafic linies
-        # row2_2.area_chart(get_df_histograma_hores(contaminante, df)) # plot modo area
+        cdf = get_df_histograma_hores(contaminante, df)
+        row2_2.line_chart(cdf,
+                          x="hora",
+                          y=[f"{contaminante}","mean", "good", "moderate", "bad"],
+                          color = ["#0033cc", "#ff0000", "#33cc33", "#66ccff", "#ff9900"])  # plot modo grafic linies no2-bad-good-mean-moderate
 
         # plot modo histograma. En aquest cas, es fa un histograma acumulat...
-        # row2_2.write(f"{contaminante} data in {eoi_name} ({ymd}) - cumulative histogram")
-        # row2_2.bar_chart(get_df_histograma_hores(contaminante, df))
+        #row2_2.write(f"{contaminante} data in {eoi_name} ({ymd}) - cumulative histogram")
+        #row2_2.bar_chart(get_df_histograma_hores(contaminante, df))
 
-    # ====================================================== ESTIC AQUI ====
+    # ======================================================
     st.subheader(f"LCZ distribution:")
     # vamos a pintar la informacion asociada a cada LCZ, con la imagen associada
     # el procedimiento va a ser muy rudimentario y seguro que se puede optimizar mas...
@@ -340,9 +414,10 @@ def streamlit_main():
     for i, col in enumerate(st.columns(5)):
         for c in ck[i]:
             dicc = rd.lcz_dict.get(DEFAULT_YEAR, {})
-            col.metric(f"% LCZ {c}", dicc.get(c, -99.99))
+            #col.metric(f"% LCZ {c}", dicc.get(c, -99.99))
+            col.metric(f"", f"{dicc.get(c, -99.99)} %")
             col.image(icgc.get_LCZ_image(c))
-            col.metric(icgc.LCZ_NAME.get(c, ''), '')
+            #col.metric(icgc.LCZ_NAME.get(c, ''), '')
 
 
 def get_NO2_annual_mean (nom_eoi:str, yr: int) -> float:
