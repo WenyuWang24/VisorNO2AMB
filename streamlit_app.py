@@ -179,7 +179,7 @@ def get_station_map_data(df: pd.DataFrame) -> tuple:
 
     # Una vez tenemos las capas que queremos poner en el mapa (selected_layers), vamos a definir el mapa base. 
     # Cambiamos mapbox (default) per ICGC contextmaps: 
-    mapstyle = "mapbox://styles/mapbox/light-v9"
+    map_style = "mapbox://styles/mapbox/light-v9"
     # map_style = "https://geoserveis.icgc.cat/contextmaps/icgc_mapa_base_gris_simplificat.json"
     
     # Y ahora definimos la vista inicial:
